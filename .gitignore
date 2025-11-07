@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Project outputs
+resolved_fastqs/
+plots/
+*.tsv
+*.csv
+*.fasta
+*.fastq
+*.fastq.gz
+*.log
+*.pdf
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
