@@ -248,6 +248,18 @@ microhap_genotypes.tsv
 microhap_a2_metrics.tsv  
 plots/  
 
+-----------------------------------------------------------
+Example dataset
+-----------------------------------------------------------
+
+A trimmed demonstration dataset used in the manuscript is available at Zenodo:
+
+https://doi.org/10.5281/zenodo.19069551
+
+The dataset contains paired-end FASTQ files from 96 delta smelt individuals
+genotyped with a 410-locus GT-seq panel. Reads were subsampled to ~150,000
+read pairs per sample to reduce download size while preserving locus
+representation and genotype structure.
 
 
 ------------------------------------------------------------
@@ -293,6 +305,11 @@ Version 0.2.1
 https://github.com/GTseq/gtseq_microhap
 
 
+Dataset citation
+
+Campbell N. 2026.
+Example delta smelt GT-seq dataset for gtseq_microhap.
+Zenodo. https://doi.org/10.5281/zenodo.19069551
 
 ------------------------------------------------------------
 AUTHOR
