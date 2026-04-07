@@ -10,7 +10,7 @@ Repository:
 https://github.com/GTseq/gtseq_microhap
 
 Pre-Print Article:
-https://www.biorxiv.org/content/10.64898/2026.04.01.715880v1.full.pdf+html
+https://www.biorxiv.org/content/10.64898/2026.04.01.715880v1
 
 ------------------------------------------------------------
 FEATURES
@@ -299,7 +299,7 @@ Molecular Ecology Resources 15:855–867.
 https://doi.org/10.1111/1755-0998.12357
 
 Pre-Print article
-https://www.biorxiv.org/content/10.64898/2026.04.01.715880v1.full.pdf+html
+https://www.biorxiv.org/content/10.64898/2026.04.01.715880v1
 
 
 Software
