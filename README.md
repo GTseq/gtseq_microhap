@@ -9,6 +9,8 @@ Unlike conventional pipelines, this workflow does not require read alignment or 
 Repository:
 https://github.com/GTseq/gtseq_microhap
 
+Pre-Print Article:
+https://www.biorxiv.org/content/10.64898/2026.04.01.715880v1.full.pdf+html
 
 ------------------------------------------------------------
 FEATURES
