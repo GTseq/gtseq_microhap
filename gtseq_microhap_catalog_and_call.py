@@ -2,7 +2,7 @@
 """
 gtseq_microhap_catalog_and_call.py
 
-Alignment-free microhaplotype genotyping for GT-seq amplicon sequencing data.
+Direct microhaplotype genotyping for GT-seq amplicon sequencing data.
 
 This script implements a GT-seq amplicon analysis pipeline that resolves
 paired-end reads into primer-bounded amplicons, builds a microhaplotype allele
