@@ -38,7 +38,7 @@ Campbell NR, Harmon SA, Narum SR. 2015. *Genotyping-in-Thousands by sequencing (
 
 The Delta Smelt validation dataset, BWA-generated reference VCF, validation scripts, concordance analyses, PIC analyses, and supporting files are archived on Zenodo:
 
-https://doi.org/10.5281/zenodo.15780159
+https://doi.org/10.5281/zenodo.19069550
 
 ---
 
