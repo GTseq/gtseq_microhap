@@ -44,7 +44,7 @@ https://doi.org/10.5281/zenodo.19069550
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - matplotlib
 - tqdm (optional)
 - bwa (required only for `--emit-vcf`)
