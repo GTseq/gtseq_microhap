@@ -24,9 +24,9 @@ Direct microhaplotype cataloging and genotyping for GT-seq paired-end amplicon d
 
 ## Citation
 
-If you use **gtseq_microhap** in published work, please cite the GT-seq microhap preprint:
+If you use **gtseq_microhap** in published work, please cite:
 
-**Preprint DOI:** https://doi.org/10.64898/2026.04.01.715880
+Campbell NR, Campbell AR, Blair SK, Finger AJ. 2026. *Direct Microhaplotype Genotyping for GT-seq (Genotyping-in-Thousands by Sequencing) Using a Diploid Abundance Model.* PLOS Computational Biology. https://doi.org/10.1371/journal.pcbi.1014808
 
 Please also cite:
 
