@@ -10,7 +10,7 @@ catalog, calls diploid genotypes, exports phased microhaplotype and optional
 single-SNP outputs, and supports accessory presence/absence assays such as
 sexID and parasite detection.
 
-Key features in version 0.3.1
+Key features in version 0.3.2
 -----------------------------------------------
 1. Quality-aware R1/R2 read resolution
    - Identifies R1 reads beginning with a locus-specific forward primer
@@ -32,6 +32,8 @@ Key features in version 0.3.1
    - Calls HOM, HET, NC, and LOW genotypes from A1/A2 abundance patterns
    - Exports allele-coded genotypes, phased SNP/variant strings, and optional
      single-SNP matrices
+   - Exports per-sample, per-locus catalog-allele depths and locus fractions;
+     BACKGROUND reports primer-bounded reads not matching a final catalog allele
 
 4. Accessory assay support
    - Optional sexID marker detection using p_OT-normalized read abundance
@@ -46,6 +48,7 @@ microhap_catalog.csv
 microhap_catalog_length_pruned.tsv
 microhap_consensus.fasta
 microhap_a2_metrics.tsv
+microhap_allele_depths.tsv
 microhap_genotypes.tsv
 microhap_phased_def.tsv
 microhap_phased.tsv
@@ -67,7 +70,7 @@ manuscript/preprint and the original GT-seq method paper.
 
 Version
 -------
-0.3.1
+0.3.2
 
 Author
 ------
@@ -76,7 +79,7 @@ GTseek LLC
 
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 import os, sys, re, gzip, csv, collections, math
 import statistics
@@ -997,6 +1000,7 @@ def call_from_resolved_fastqs(
 
     per_locus_sample_gt: dict[str, dict[str, str]] = defaultdict(dict)
     a2_rows: list[dict] = []
+    allele_depth_rows: list[dict] = []  # all observed catalog alleles + off-catalog background
 
     # for plots
     locus_points_a1a2 = defaultdict(list)        # (a1_ct, a2_ct, call, code_for_hom_or_None)
@@ -1040,8 +1044,41 @@ def call_from_resolved_fastqs(
             total_cat = sum(cnts.values())
             off_cat = sample_locus_offcat.get(loc, 0)
 
-            if (total_cat + off_cat) > 0:
+            total_reads_for_loc = total_cat + off_cat
+
+            if total_reads_for_loc > 0:
                 locus_total_samples[loc] += 1
+
+                # Long-format per-sample allele-depth diagnostics. Every observed
+                # final-catalog allele gets its own row, ranked by read depth.
+                # Fractions use all primer-bounded reads at the locus as the
+                # denominator. Off-catalog reads are reported separately as
+                # BACKGROUND, so A3/A4/etc. are not hidden in background.
+                ranked_catalog = sorted(
+                    cnts.items(),
+                    key=lambda kv: (-kv[1], catalog[loc][kv[0]], kv[0]),
+                )
+                for rank, (allele_seq, allele_depth) in enumerate(ranked_catalog, start=1):
+                    allele_depth_rows.append({
+                        "sample": sample,
+                        "locus": loc,
+                        "allele_code": int(catalog[loc][allele_seq]),
+                        "sequence": allele_seq,
+                        "depth": int(allele_depth),
+                        "locus_fraction": allele_depth / float(total_reads_for_loc),
+                        "rank": rank,
+                    })
+
+                if off_cat > 0:
+                    allele_depth_rows.append({
+                        "sample": sample,
+                        "locus": loc,
+                        "allele_code": "BACKGROUND",
+                        "sequence": ".",
+                        "depth": int(off_cat),
+                        "locus_fraction": off_cat / float(total_reads_for_loc),
+                        "rank": ".",
+                    })
 
             # no catalog reads -> no call
             if total_cat == 0:
@@ -1140,6 +1177,15 @@ def call_from_resolved_fastqs(
             locus_background_sum[loc] += float(frac)
 
     # ---- write outputs ----
+    with Path(f"{out_prefix}_allele_depths.tsv").open("w", newline="") as out:
+        w = csv.writer(out, delimiter="\t")
+        w.writerow(["sample", "locus", "allele_code", "sequence", "depth", "locus_fraction", "rank"])
+        for r in allele_depth_rows:
+            w.writerow([
+                r["sample"], r["locus"], r["allele_code"], r["sequence"],
+                r["depth"], f'{r["locus_fraction"]:.6f}', r["rank"]
+            ])
+
     with Path(f"{out_prefix}_a2_metrics.tsv").open("w", newline="") as out:
         w = csv.writer(out, delimiter="\t")
         w.writerow(["sample", "locus", "depth", "A1_count", "A2_count", "A1_code", "A2_code", "A2_pct", "call"])
@@ -4650,6 +4696,7 @@ def main():
     if not args.use_catalog:
         print(f"- Consensus FASTA: {consensus_fa}")
     print(f"- Metrics:         {outdir / 'microhap_a2_metrics.tsv'}")
+    print(f"- Allele depths:   {outdir / 'microhap_allele_depths.tsv'}")
     print(f"- Genotypes:       {outdir / 'microhap_genotypes.tsv'}")
     print(f"- Phased defs:     {outdir / 'microhap_phased_def.tsv'}")
     print(f"- Phased calls:    {outdir / 'microhap_phased.tsv'}")

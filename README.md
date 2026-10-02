@@ -5,7 +5,7 @@ Direct microhaplotype cataloging and genotyping for GT-seq paired-end amplicon d
 
 `gtseq_microhap_catalog_and_call.py` resolves primer-bounded paired-end reads, builds a microhaplotype allele catalog, calls diploid genotypes, exports phased microhaplotypes, optional single-SNP matrices, accessory assay calls, publication-quality QC plots, and reference-anchored VCF output.
 
-**Current release:** **v0.3.1**
+**Current release:** **v0.3.2**
 
 ---
 
@@ -14,6 +14,7 @@ Direct microhaplotype cataloging and genotyping for GT-seq paired-end amplicon d
 - Quality-aware paired-end amplicon reconstruction
 - Diploid-aware catalog construction
 - Catalog-based genotype calling (HOM/HET/NC/LOW)
+- Per-sample, per-locus catalog allele depth and locus-fraction diagnostics
 - Phased SNP-only and SNP+indel outputs
 - Optional single-SNP exports
 - SexID and parasite/presence/absence assays
@@ -89,6 +90,7 @@ All outputs are written to `--outdir` unless otherwise noted.
 | `microhap_catalog_length_pruned.tsv` | Candidate alleles removed by length/divergence filtering. Provides an audit trail even when no alleles are removed. |
 | `microhap_consensus.fasta` | Highest-supported consensus allele sequence for each locus. |
 | `microhap_a2_metrics.tsv` | Per-sample A1/A2 counts, allele codes, depth, A2 percentage, and genotype call. |
+| `microhap_allele_depths.tsv` | Long-format per-sample, per-locus read depths and locus fractions for every observed final-catalog allele. `BACKGROUND` rows report primer-bounded reads that do not match a final catalog allele; allele and background fractions use all primer-bounded reads at that sample × locus as the denominator. |
 | `microhap_genotypes.tsv` | Locus-by-sample matrix of allele-coded diploid genotypes. Missing/no-calls are `000000`. |
 | `microhap_phased_def.tsv` | Variant definitions used to generate phased haplotypes. |
 | `microhap_phased.tsv` | Per-sample phased SNP-only and SNP+indel haplotypes. |
@@ -133,6 +135,13 @@ The help output documents every option and its default value.
 ---
 
 ## Version history
+
+### v0.3.2
+
+- Added `microhap_allele_depths.tsv` for panel-development and locus-QC diagnostics.
+- Reports every observed final-catalog allele for each sample × locus with allele code, sequence, read depth, locus fraction, and within-sample rank.
+- Reports off-catalog primer-bounded reads as `BACKGROUND`; catalog allele fractions plus `BACKGROUND` sum to 1 for each sample × locus with reads.
+- Genotype inference remains based on the existing A1/A2 diploid abundance model.
 
 ### v0.3.1
 
