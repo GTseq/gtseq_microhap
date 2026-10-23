@@ -1,17 +1,18 @@
 
 # gtseq_microhap
 
-Direct microhaplotype cataloging and genotyping for GT-seq paired-end amplicon data.
+Direct microhaplotype cataloging and genotyping for GT-seq paired-end and single-end amplicon data.
 
-`gtseq_microhap_catalog_and_call.py` resolves primer-bounded paired-end reads, builds a microhaplotype allele catalog, calls diploid genotypes, exports phased microhaplotypes, optional single-SNP matrices, accessory assay calls, publication-quality QC plots, and reference-anchored VCF output.
+`gtseq_microhap_catalog_and_call.py` resolves primer-bounded paired-end reads or probe-validated single-end reads, builds a microhaplotype allele catalog, calls diploid genotypes, exports phased microhaplotypes, optional single-SNP matrices, accessory assay calls, publication-quality QC plots, and reference-anchored VCF output.
 
-**Current release:** **v0.3.2**
+**Current release:** **v0.3.4**
 
 ---
 
 ## Features
 
-- Quality-aware paired-end amplicon reconstruction
+- Quality-aware paired-end amplicon reconstruction (default)
+- Single-end resolution using forward primers and internal probe sequences (`--single-end`)
 - Diploid-aware catalog construction
 - Catalog-based genotype calling (HOM/HET/NC/LOW)
 - Per-sample, per-locus catalog allele depth and locus-fraction diagnostics
@@ -47,7 +48,7 @@ https://doi.org/10.5281/zenodo.19069550
 
 - Python 3.10+
 - matplotlib
-- tqdm (optional)
+- tqdm (required for single-end progress reporting; optional for paired-end)
 - bwa (required only for `--emit-vcf`)
 
 ---
@@ -64,17 +65,56 @@ python3 gtseq_microhap_catalog_and_call.py --help
 
 ## Inputs
 
-* Paired-end FASTQ/FASTQ.GZ files
-* Primer CSV/TSV containing `locus`, `fwd_primer`, and `rev_primer`
-* Optional SexID and parasite marker lists
+### Paired-end (default)
+
+Provide paired R1/R2 FASTQ or FASTQ.GZ files in `--indir`, named so that the pipeline can identify matching R1 and R2 files. Provide a primer CSV/TSV containing `locus`, `fwd_primer`, and `rev_primer` (aliases `fwd` and `rev` are accepted). Paired-end reads are merged and trimmed to retain the complete forward-primer-through-reverse-complement-of-reverse-primer amplicon.
+
+### Single-end (`--single-end`)
+
+Provide single-end FASTQ or FASTQ.GZ files in `--indir` and a **CSV** with five columns:
+
+```csv
+locus,fwd_primer,rev_primer,probe1,probe2
+Locus001,ACGTACGT,TGCATGCA,AGC.TGAC,AGC.TGTC
+```
+
+`fwd` and `rev` are also accepted as header names. These example sequences are illustrative, not a validated assay. Each locus requires a forward primer, reverse primer, and at least one nonempty probe.
+
+The SE resolver requires a read to start with the locus's forward primer and contain **at least one** downstream match to `probe1`, `probe2`, or the reverse complement of either probe. In probe patterns, `.` matches exactly one nucleotide (`A`, `C`, `G`, or `T`); the same wildcard rule applies after reverse complementation. Probe sequences are matching patterns, not replacements for observed bases.
+
+If the reverse complement of the reverse primer (`RC-REV`) occurs downstream, the resolver trims **after** the complete RC-REV sequence. Both primer sequences remain in the resolved read. If RC-REV is absent, the read is retained to its sequenced endpoint, subject to the amplicon-length limits. Ambiguous matches to multiple loci are discarded. R2 files and existing `resolved_` FASTQs are excluded from SE input discovery; multiple SE files collapsing to the same sample name must be merged beforehand.
+
+**Important limitation:** Reads from the same biological allele that end at different positions are distinct full-length sequences to the unchanged catalog. For reliable SE genotyping, use read lengths that consistently span the target or evaluate potential terminal-length artifacts and background fractions.
+
+### Optional inputs
+
+SexID and parasite marker lists may also be supplied using the existing command-line options.
 
 ---
 
 ## Quick start
 
+**Paired-end (default):**
+
 ```bash
-python3 gtseq_microhap_catalog_and_call.py   --primers primers.csv   --indir R1_R2   --outdir microhap_out
+python3 gtseq_microhap_catalog_and_call.py \
+  --primers primers.csv \
+  --indir R1_R2 \
+  --outdir microhap_PE
 ```
+
+**Single-end:**
+
+```bash
+python3 gtseq_microhap_catalog_and_call.py \
+  --single-end \
+  --primers targets_with_probes.csv \
+  --indir SE_FASTQs \
+  --outdir microhap_SE \
+  --workers 20
+```
+
+Single-end mode displays a combined read-count progress bar with `tqdm`. To estimate total reads and remaining time, it makes an initial counting pass over the input FASTQs. The resolver produces the same `resolved_fastqs/resolved_<sample>.fastq.gz` interface used by the existing catalog and genotype caller. Keep separate output directories for PE and SE runs to avoid mixing resolved FASTQs.
 
 ---
 
@@ -84,8 +124,8 @@ All outputs are written to `--outdir` unless otherwise noted.
 
 | Output | Description |
 |---------|-------------|
-| `sample_stats.tsv` | Raw read pair counts and primer-bounded read counts for every sample. |
-| `resolved_fastqs/resolved_<sample>.fastq.gz` | Primer-bounded resolved amplicon FASTQs used for downstream analysis. |
+| `sample_stats.tsv` | Raw read counts (read pairs for PE; single reads for SE) and accepted resolved-read counts for every sample. |
+| `resolved_fastqs/resolved_<sample>.fastq.gz` | Resolved amplicon FASTQs used for downstream analysis; SE reads may lack RC-REV if sequencing ended before the reverse primer. |
 | `microhap_catalog.csv` | Final allele catalog containing locus, allele code, sequence, support count, and total support. |
 | `microhap_catalog_length_pruned.tsv` | Candidate alleles removed by length/divergence filtering. Provides an audit trail even when no alleles are removed. |
 | `microhap_consensus.fasta` | Highest-supported consensus allele sequence for each locus. |
@@ -136,12 +176,23 @@ The help output documents every option and its default value.
 
 ## Version history
 
-### v0.3.2
+### v0.3.4
 
-- Added `microhap_allele_depths.tsv` for panel-development and locus-QC diagnostics.
-- Reports every observed final-catalog allele for each sample × locus with allele code, sequence, read depth, locus fraction, and within-sample rank.
-- Reports off-catalog primer-bounded reads as `BACKGROUND`; catalog allele fractions plus `BACKGROUND` sum to 1 for each sample × locus with reads.
-- Genotype inference remains based on the existing A1/A2 diploid abundance model.
+- Added optional `--single-end` mode with five-column locus/primer/probe CSV input.
+- SE locus validation requires the forward primer plus either internal probe in either orientation, including `.` single-nucleotide wildcard patterns.
+- Preserves observed forward and reverse-primer sequences and trims adapter read-through after RC-REV when present.
+- Added multiprocess, read-based SE resolution progress reporting with ETA.
+- PE processing remains the default; downstream catalog construction and genotype calling are unchanged.
+
+### v0.3.3
+
+- Added `microhap_allele_depths.tsv` with per-sample, per-locus allele depths, fractions, rank, and off-catalog `BACKGROUND` reads (requested for locus QC).
+- Retained the existing diploid A1/A2 genotype inference.
+
+### v0.3.2 (previous documented release)
+
+- Previous paired-end release with catalog length/divergence filtering and diploid genotyping.
+- The prior README attributed allele-depth reporting to v0.3.2; it is described under v0.3.3 above for the intended release sequence.
 
 ### v0.3.1
 

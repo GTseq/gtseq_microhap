@@ -5,12 +5,13 @@ gtseq_microhap_catalog_and_call.py
 Direct microhaplotype genotyping for GT-seq amplicon sequencing data.
 
 This script implements a GT-seq amplicon analysis pipeline that resolves
-paired-end reads into primer-bounded amplicons, builds a microhaplotype allele
+paired-end reads into primer-bounded amplicons or validates single-end reads
+using forward primers and internal probes, builds a microhaplotype allele
 catalog, calls diploid genotypes, exports phased microhaplotype and optional
 single-SNP outputs, and supports accessory presence/absence assays such as
 sexID and parasite detection.
 
-Key features in version 0.3.2
+Key features in version 0.3.4
 -----------------------------------------------
 1. Quality-aware R1/R2 read resolution
    - Identifies R1 reads beginning with a locus-specific forward primer
@@ -35,7 +36,13 @@ Key features in version 0.3.2
    - Exports per-sample, per-locus catalog-allele depths and locus fractions;
      BACKGROUND reports primer-bounded reads not matching a final catalog allele
 
-4. Accessory assay support
+4. Single-end read resolution
+   - Uses forward primer plus either internal probe (including reverse-complement patterns)
+   - Probe periods match one A/C/G/T base; retains primer sequences
+   - Trims only sequence downstream of RC(reverse primer), when present
+   - Reports read-level progress during SE resolution
+
+5. Accessory assay support
    - Optional sexID marker detection using p_OT-normalized read abundance
    - Optional parasite/presence-absence marker detection using normalized
      marker abundance categories
@@ -70,7 +77,7 @@ manuscript/preprint and the original GT-seq method paper.
 
 Version
 -------
-0.3.2
+0.3.4
 
 Author
 ------
@@ -79,7 +86,7 @@ GTseek LLC
 
 """
 
-__version__ = "0.3.2"
+__version__ = "0.3.4"
 
 import os, sys, re, gzip, csv, collections, math
 import statistics
@@ -419,6 +426,179 @@ def build_merged_amplicon(
     if trimmed is None:
         return None
     return trimmed
+
+
+# ---------------------------------------------------------------------
+# Single-end probe-validated read resolution (v0.3.4)
+# ---------------------------------------------------------------------
+def load_se_targets(path):
+    targets = {}
+    with open(path, newline="") as fh:
+        reader = csv.DictReader(fh)
+        if not reader.fieldnames:
+            raise ValueError("Empty SE target CSV")
+        reader.fieldnames = [x.strip().lower() for x in reader.fieldnames]
+        # Accept original assay CSV headers as well as abbreviated headers.
+        reader.fieldnames = [{"fwd_primer": "fwd", "rev_primer": "rev"}.get(x, x)
+                             for x in reader.fieldnames]
+        required = {"locus", "fwd", "rev", "probe1", "probe2"}
+        if not required.issubset(reader.fieldnames):
+            raise ValueError(f"SE target CSV requires {sorted(required)}")
+        for row in reader:
+            locus = row["locus"].strip()
+            fwd, rev = row["fwd"].strip().upper(), row["rev"].strip().upper()
+            probes = tuple(x.strip().upper() for x in (row["probe1"], row["probe2"]) if x and x.strip())
+            if not locus or not fwd or not rev or not probes:
+                raise ValueError(f"Incomplete SE target row: {row}")
+            if locus in targets:
+                raise ValueError(f"Duplicate SE locus: {locus}")
+            if any(set(x)-set("ACGT") for x in (fwd, rev)) or any(
+                    set(x)-set("ACGT.") for x in probes):
+                raise ValueError(f"Invalid primer/probe sequence at {locus}")
+            targets[locus] = (fwd, rev, probes)
+    if not targets:
+        raise ValueError("No SE targets found")
+    return targets
+
+
+def find_single_fastqs(indir):
+    paths = sorted(p for p in indir.iterdir() if p.name.endswith((".fastq", ".fastq.gz"))
+                   and not R2_TAG.search(p.name) and not p.name.startswith("resolved_"))
+    samples = {}
+    for path in paths:
+        sample = infer_sample_base(path.name)
+        if sample in samples:
+            raise ValueError(f"Multiple SE files resolve to sample {sample}; merge lanes first")
+        samples[sample] = path
+    return samples
+
+
+def resolve_se_read(seq, qual, targets, min_amplicon, max_amplicon):
+    seq = seq.upper()
+    if len(seq) != len(qual):
+        return None
+    matches = []
+    for locus, (fwd, rev, probes) in targets.items():
+        if not seq.startswith(fwd):
+            continue
+        rev_rc = rc(rev)
+        end_idx = seq.find(rev_rc, len(fwd))
+        end = end_idx + len(rev_rc) if end_idx >= 0 else len(seq)
+        trimmed = seq[:end]
+        if not min_amplicon <= len(trimmed) <= max_amplicon:
+            continue
+        # Accept either orientation of either probe, but only downstream of
+        # the locus-specific forward primer and inside the retained read.
+        # Probe dots are single-base wildcards. Match only DNA bases, not N.
+        # Reverse-complement regex patterns by reversing the pattern and
+        # complementing literal nucleotides while preserving dots.
+        import re
+        complement = str.maketrans("ACGT", "TGCA")
+        probe_variants = {variant for probe in probes
+                          for variant in (probe, probe.translate(complement)[::-1])}
+        if not any(re.search(pattern.replace(".", "[ACGT]"), trimmed[len(fwd):])
+                   for pattern in probe_variants):
+            continue
+        matches.append((locus, trimmed, qual[:end]))
+    # Ambiguous primer/probe assignments are discarded, not assigned arbitrarily.
+    return matches[0] if len(matches) == 1 else None
+
+
+def process_sample_single(read_path, sample_name, targets, min_amplicon,
+                          max_amplicon, out_dir, force=False, progress_queue=None):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"resolved_{sample_name}.fastq.gz"
+    if out_path.exists() and not force:
+        return {"sample": sample_name, "read_pairs": count_fastq_records(read_path),
+                "resolved": count_fastq_records(out_path), "skipped_existing": True}
+    tmp = out_path.with_suffix(out_path.suffix + ".part")
+    raw = accepted = 0
+    pending_progress = 0
+    try:
+        with open_read(read_path) as src, gzip.open(tmp, "wt") as dst:
+            while (rec := next_fastq_record(src)) is not None:
+                raw += 1
+                pending_progress += 1
+                if progress_queue is not None and pending_progress >= 10000:
+                    progress_queue.put(pending_progress)
+                    pending_progress = 0
+                h, seq, _plus, qual = rec
+                hit = resolve_se_read(seq, qual, targets, min_amplicon, max_amplicon)
+                if hit is None:
+                    continue
+                locus, resolved_seq, resolved_qual = hit
+                accepted += 1
+                dst.write(f"{h.split()[0]}|locus={locus}\n{resolved_seq}\n+\n{resolved_qual}\n")
+        if progress_queue is not None and pending_progress:
+            progress_queue.put(pending_progress)
+            pending_progress = 0
+        tmp.replace(out_path)
+    finally:
+        if progress_queue is not None and pending_progress:
+            progress_queue.put(pending_progress)
+        if tmp.exists():
+            tmp.unlink()
+    return {"sample": sample_name, "read_pairs": raw, "resolved": accepted,
+            "skipped_existing": False}
+
+
+def _worker_resolve_se(args):
+    return process_sample_single(*args)
+
+
+def resolve_single_fastqs_multiprocess(samples, resolved_dir, targets,
+                                        min_amplicon, max_amplicon, force,
+                                        workers, out_stats_path):
+    # SE_PROGRESS_PATCH_V1: workers send read-count increments to the parent.
+    # Precounting FASTQs costs one sequential read pass, but gives an accurate ETA.
+    from multiprocessing import Manager
+    from queue import Empty
+    try:
+        from tqdm.auto import tqdm
+    except ImportError as exc:
+        raise SystemExit("SE progress requires tqdm: python3 -m pip install tqdm") from exc
+
+    stats = {}
+    errors = []
+    total = sum(count_fastq_records(path) for name, path in sorted(samples.items())
+                if force or not (Path(resolved_dir) / f"resolved_{name}.fastq.gz").exists())
+    with Manager() as manager:
+        progress_queue = manager.Queue()
+        jobs = [(path, name, targets, min_amplicon, max_amplicon,
+                 resolved_dir, force, progress_queue)
+                for name, path in sorted(samples.items())]
+        with tqdm(total=total, desc="Resolving SE reads", unit="reads",
+                  unit_scale=True, mininterval=0.5) as bar:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_worker_resolve_se, job): job[1] for job in jobs}
+                pending = set(futures)
+                while pending:
+                    try:
+                        bar.update(progress_queue.get(timeout=0.25))
+                    except Empty:
+                        pass
+                    finished = {f for f in pending if f.done()}
+                    for future in finished:
+                        name = futures[future]
+                        try:
+                            stats[name] = future.result()
+                        except Exception as exc:
+                            errors.append(f"{name}: {exc}")
+                    pending -= finished
+                # Drain messages that arrived just before worker completion.
+                while True:
+                    try:
+                        bar.update(progress_queue.get_nowait())
+                    except Empty:
+                        break
+    with Path(out_stats_path).open("w", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t")
+        writer.writerow(["sample", "raw_reads", "primer_bounded_reads"])
+        for name in sorted(stats):
+            row = stats[name]
+            writer.writerow([name, row["read_pairs"], row["resolved"]])
+    return len(stats), errors
 
 def _select_top2_for_catalog(cnts: "collections.Counter[str]", hom_min=0.85, het_min=0.30):
     total = sum(cnts.values())
@@ -4302,8 +4482,9 @@ def main():
     )
     ap.add_argument("--version", action="version", version=f"gtseq_microhap_catalog_and_call.py {__version__}")
 
-    ap.add_argument("--primers", required=True, help="CSV/TSV with locus,fwd_primer,rev_primer")
-    ap.add_argument("--indir", required=True, help="Directory of FASTQ(.gz) pairs")
+    ap.add_argument("--primers", required=True, help="PE: primer CSV/TSV; SE: locus,fwd,rev,probe1,probe2 CSV")
+    ap.add_argument("--single-end", action="store_true", help="Resolve single-end FASTQs using forward primer and allele-specific probes")
+    ap.add_argument("--indir", required=True, help="Directory of FASTQ(.gz) files (PE pairs or SE reads with --single-end)")
     ap.add_argument("--outdir", default="microhap_out", help="Output directory")
     ap.add_argument("--resolved-dir", default=None, help="Override resolved_fastqs directory; if omitted, uses <outdir>/resolved_fastqs")
     ap.add_argument("--min-amplicon", type=int, default=60, help="Minimum accepted primer-bounded amplicon length")
@@ -4460,26 +4641,34 @@ def main():
     else:
         catalog_csv = built_catalog_csv
 
-    primers = load_primers(Path(args.primers))
-    pairs = find_fastq_pairs(Path(args.indir))
-    if not pairs:
-        sys.exit("ERROR: no FASTQ pairs found.")
-
-    paired_samples = [(r1, r2, sample) for sample, (r1, r2) in pairs.items()]
     workers = args.workers if args.workers and args.workers > 0 else _n_workers(None)
-
-    n_done, errors = resolve_fastqs_multiprocess(
-        paired_samples=paired_samples,
-        resolved_dir=resolved_dir,
-        primers=primers,
-        min_amplicon=args.min_amplicon,
-        max_amplicon=args.max_amplicon,
-        min_overlap=args.min_overlap,
-        max_ov_mismatch_frac=args.max_ov_mismatch_frac,
-        force=args.force,
-        workers=workers,
-        out_stats_path=sample_stats_tsv,
-    )
+    if args.single_end:
+        se_targets = load_se_targets(Path(args.primers))
+        primers = {loc: (fwd, rev) for loc, (fwd, rev, probes) in se_targets.items()}
+        samples = find_single_fastqs(Path(args.indir))
+        if not samples:
+            sys.exit("ERROR: no single-end FASTQs found.")
+        n_done, errors = resolve_single_fastqs_multiprocess(
+            samples, resolved_dir, se_targets, args.min_amplicon,
+            args.max_amplicon, args.force, workers, sample_stats_tsv)
+    else:
+        primers = load_primers(Path(args.primers))
+        pairs = find_fastq_pairs(Path(args.indir))
+        if not pairs:
+            sys.exit("ERROR: no FASTQ pairs found.")
+        paired_samples = [(r1, r2, sample) for sample, (r1, r2) in pairs.items()]
+        n_done, errors = resolve_fastqs_multiprocess(
+            paired_samples=paired_samples,
+            resolved_dir=resolved_dir,
+            primers=primers,
+            min_amplicon=args.min_amplicon,
+            max_amplicon=args.max_amplicon,
+            min_overlap=args.min_overlap,
+            max_ov_mismatch_frac=args.max_ov_mismatch_frac,
+            force=args.force,
+            workers=workers,
+            out_stats_path=sample_stats_tsv,
+        )
     if errors:
         print("Some samples failed during resolve:", file=sys.stderr)
         for e in errors[:50]:
